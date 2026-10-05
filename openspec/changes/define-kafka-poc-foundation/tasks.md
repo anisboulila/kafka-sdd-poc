@@ -6,8 +6,8 @@
 
 ## 2. Provide the local Kafka broker
 
-- [ ] 2.1 Add a Docker Compose Kafka service configured for single-broker KRaft mode without ZooKeeper; verify `docker compose config` succeeds and the broker starts and reports ready.
-- [ ] 2.2 Document the local broker startup, stop, and Kafka CLI inspection commands; verify each documented command works against the running Compose service.
+- [x] 2.1 Add a Docker Compose Kafka service configured for single-broker KRaft mode without ZooKeeper; verify `docker compose config` succeeds and the broker starts and reports ready.
+- [x] 2.2 Document the local broker startup, stop, and Kafka CLI inspection commands; verify each documented command works against the running Compose service.
 
 ## 3. Implement order creation and publication
 
