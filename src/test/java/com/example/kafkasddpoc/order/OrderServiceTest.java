@@ -2,6 +2,7 @@ package com.example.kafkasddpoc.order;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -21,6 +22,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 
@@ -63,5 +65,49 @@ class OrderServiceTest {
         assertEquals("customer-456", createdOrder.customerId());
         assertEquals(new BigDecimal("19.95"), createdOrder.amount());
         assertEquals(CREATED_AT, createdOrder.createdAt());
+    }
+
+    @Test
+    void propagatesExceptionalKafkaPublication() {
+        OrderService orderService = new OrderService(kafkaTemplate, Clock.systemUTC());
+        CompletableFuture<SendResult<String, OrderCreated>> publication = new CompletableFuture<>();
+        publication.completeExceptionally(new KafkaException("Kafka unavailable"));
+        when(kafkaTemplate.send(eq("order-events"), anyString(), any(OrderCreated.class)))
+                .thenReturn(publication);
+
+        assertThrows(
+                OrderPublicationException.class,
+                () -> orderService.createOrder(
+                        new CreateOrderRequest("customer-456", new BigDecimal("19.95"))));
+    }
+
+    @Test
+    void wrapsSynchronousKafkaPublicationFailure() {
+        OrderService orderService = new OrderService(kafkaTemplate, Clock.systemUTC());
+        when(kafkaTemplate.send(eq("order-events"), anyString(), any(OrderCreated.class)))
+                .thenThrow(new KafkaException("Kafka unavailable"));
+
+        assertThrows(
+                OrderPublicationException.class,
+                () -> orderService.createOrder(
+                        new CreateOrderRequest("customer-456", new BigDecimal("19.95"))));
+    }
+
+    @Test
+    void restoresInterruptAndPropagatesInterruptedPublication() {
+        OrderService orderService = new OrderService(kafkaTemplate, Clock.systemUTC());
+        when(kafkaTemplate.send(eq("order-events"), anyString(), any(OrderCreated.class)))
+                .thenReturn(new CompletableFuture<>());
+
+        Thread.currentThread().interrupt();
+        try {
+            assertThrows(
+                    OrderPublicationException.class,
+                    () -> orderService.createOrder(
+                            new CreateOrderRequest("customer-456", new BigDecimal("19.95"))));
+            assertTrue(Thread.currentThread().isInterrupted());
+        } finally {
+            Thread.interrupted();
+        }
     }
 }

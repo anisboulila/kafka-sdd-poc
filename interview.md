@@ -399,3 +399,80 @@ advertised.listeners
 8. Pourquoi `localhost:9092` n'est-il pas une URL HTTP ?
 9. Pourquoi commençons-nous avec un seul broker ?
 10. Pourquoi commençons-nous avec une seule partition ?
+
+---
+
+## 14. Producer, publication et contrat HTTP
+
+### Question
+
+Comment `POST /orders` publie-t-il un événement Kafka ?
+
+### Réponse
+
+Le controller reçoit `customerId` et `amount`. Le service construit un `OrderCreated` avec un `orderId` généré et `createdAt` en UTC au format ISO-8601. `KafkaTemplate` est le client Spring Kafka utilisé par le producer pour envoyer l'objet; le serializer JSON le transforme en payload JSON.
+
+L'événement est publié sur `order-events`, avec `orderId` comme record key. Kafka range le record dans une partition; son offset identifie sa position dans cette partition. Dans ce POC, le topic a une partition et un facteur de réplication de 1.
+
+### Question
+
+Quelle différence entre demander un envoi et confirmer la publication ?
+
+### Réponse
+
+Appeler `KafkaTemplate.send` demande l'envoi et retourne un future; cela ne confirme pas encore que Kafka a accepté le record. Le service attend la fin de ce future. L'API retourne `201 Created` seulement quand la publication est confirmée.
+
+Si Kafka est indisponible, si l'envoi échoue ou si l'attente est interrompue, la publication n'est pas confirmée : l'API répond `503 Service Unavailable`, jamais un succès 2xx. Aucun retry ni DLT n'est ajouté dans cette étape. L'ack Kafka ne signifie pas qu'un consumer a traité le message.
+
+### Question
+
+Comment envoyer et vérifier un événement ?
+
+### Réponse
+
+Exemple PowerShell :
+
+```powershell
+curl.exe -i -X POST "http://localhost:8080/orders" `
+  -H "Content-Type: application/json" `
+  --data-raw '{"customerId":"customer-001","amount":24.50}'
+```
+
+La réponse `201` ressemble à ceci (les valeurs générées varient) :
+
+```json
+{
+  "orderId": "b1d02f1a-d3d2-4a85-8e6e-69202ef3340c",
+  "customerId": "customer-001",
+  "amount": 24.50,
+  "createdAt": "2026-10-06T12:30:00Z"
+}
+```
+
+Pour lire les records Kafka, clés et offsets :
+
+```powershell
+docker compose -f compose.yaml exec kafka kafka-console-consumer `
+  --bootstrap-server localhost:9092 `
+  --topic order-events `
+  --from-beginning `
+  --property print.key=true `
+  --property print.partition=true `
+  --property print.offset=true
+```
+
+Exemple de ligne affichée (l'offset et l'identifiant sont attribués par Kafka et l'API) :
+
+```text
+Partition:0    Offset:4    b1d02f1a-d3d2-4a85-8e6e-69202ef3340c    {"orderId":"b1d02f1a-d3d2-4a85-8e6e-69202ef3340c","customerId":"customer-001","amount":24.50,"createdAt":"2026-10-06T12:30:00Z"}
+```
+
+On peut aussi ouvrir Kafka UI à <http://localhost:8081> et consulter les messages du topic.
+
+### Question
+
+Pourquoi deux requêtes `POST` créent-elles deux records et deux offsets ?
+
+### Réponse
+
+Chaque requête réussie crée un nouvel événement avec un `orderId` distinct, puis le producer envoie un nouveau record. Kafka attribue à chaque record une position dans la partition; les deux offsets sont donc différents et augmentent au fil des écritures. La record key ne déduplique pas les messages.

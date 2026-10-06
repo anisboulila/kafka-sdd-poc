@@ -43,4 +43,19 @@ class OrderControllerTest {
                 .andExpect(jsonPath("$.amount").value(19.95))
                 .andExpect(jsonPath("$.createdAt").value("2026-10-05T16:00:00Z"));
     }
+
+    @Test
+    void returnsServiceUnavailableWhenKafkaPublicationCannotBeConfirmed() throws Exception {
+        when(orderService.createOrder(any(CreateOrderRequest.class)))
+                .thenThrow(new OrderPublicationException("Could not publish order event", null));
+
+        mockMvc.perform(post("/orders")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"customerId":"customer-456","amount":19.95}
+                                """))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.detail").value(
+                        "The order event could not be confirmed by Kafka."));
+    }
 }

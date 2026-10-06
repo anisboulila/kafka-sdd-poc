@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 
@@ -40,6 +41,8 @@ public class OrderService {
             Thread.currentThread().interrupt();
             throw new OrderPublicationException("Interrupted while publishing order event", e);
         } catch (ExecutionException e) {
+            throw new OrderPublicationException("Could not publish order event", e);
+        } catch (KafkaException e) {
             throw new OrderPublicationException("Could not publish order event", e);
         }
     }
