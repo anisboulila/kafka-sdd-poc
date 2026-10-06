@@ -1,7 +1,5 @@
 package com.example.kafkasddpoc.order;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.UUID;
@@ -15,20 +13,16 @@ public class OrderService {
 
     private static final String ORDER_EVENTS_TOPIC = "order-events";
 
-    private final KafkaTemplate<String, String> kafkaTemplate;
-    private final ObjectMapper objectMapper;
+    private final KafkaTemplate<String, OrderCreated> kafkaTemplate;
     private final Clock clock;
 
     @Autowired
-    public OrderService(
-            KafkaTemplate<String, String> kafkaTemplate,
-            ObjectMapper objectMapper) {
-        this(kafkaTemplate, objectMapper, Clock.systemUTC());
+    public OrderService(KafkaTemplate<String, OrderCreated> kafkaTemplate) {
+        this(kafkaTemplate, Clock.systemUTC());
     }
 
-    OrderService(KafkaTemplate<String, String> kafkaTemplate, ObjectMapper objectMapper, Clock clock) {
+    OrderService(KafkaTemplate<String, OrderCreated> kafkaTemplate, Clock clock) {
         this.kafkaTemplate = kafkaTemplate;
-        this.objectMapper = objectMapper;
         this.clock = clock;
     }
 
@@ -40,11 +34,8 @@ public class OrderService {
                 Instant.now(clock).toString());
 
         try {
-            String payload = objectMapper.writeValueAsString(event);
-            kafkaTemplate.send(ORDER_EVENTS_TOPIC, event.orderId(), payload).get();
+            kafkaTemplate.send(ORDER_EVENTS_TOPIC, event.orderId(), event).get();
             return event;
-        } catch (JsonProcessingException e) {
-            throw new OrderPublicationException("Could not serialize order event", e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new OrderPublicationException("Interrupted while publishing order event", e);
