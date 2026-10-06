@@ -11,7 +11,7 @@
 
 ## 3. Implement order creation and publication
 
-- [ ] 3.1 Implement `POST /orders` to accept `customerId` and decimal `amount`, generate a string `orderId` and UTC ISO-8601 `createdAt`, and return `201 Created` with the event only after Kafka confirms publication; verify endpoint tests cover the response and event fields.
+- [x] 3.1 Implement `POST /orders` to accept `customerId` and decimal `amount`, generate a string `orderId` and UTC ISO-8601 `createdAt`, and return `201 Created` with the event only after Kafka confirms publication; verify endpoint tests cover the response and event fields.
 - [ ] 3.2 Configure the `OrderCreated` JSON producer and explicitly declare `order-events` with one partition and replication factor 1, using `orderId` as the record key; verify a producer integration test observes the expected topic, key, and JSON payload.
 - [ ] 3.3 Handle failed or unconfirmed publication without returning a 2xx response, and document the endpoint and event contract in the project guide and `interview.md`; verify failure-path tests and the documented request/response example.
 
