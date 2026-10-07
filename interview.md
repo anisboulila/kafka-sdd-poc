@@ -523,6 +523,60 @@ Chaque record a un offset dans sa partition. Kafka stocke les offsets validés p
 
 ---
 
+## 16. Consumer Notification
+
+### Question
+
+Pourquoi le Notification Consumer utilise-t-il `notification-group` ?
+
+### Réponse
+
+Ce consumer écoute `order-events` dans le groupe `notification-group`, différent de `payment-group`. Kafka livre ainsi le même record à chacun des groupes et suit leur progression indépendamment.
+
+### Question
+
+Quelle est la différence entre un consumer et un consumer group ?
+
+### Réponse
+
+Un consumer est un client Kafka qui lit et traite les records. Le consumer group est l'identité logique partagée par un ou plusieurs consumers, à laquelle Kafka assigne les partitions et associe les offsets.
+
+### Question
+
+Comment deux groupes traitent-ils indépendamment le même record ?
+
+### Réponse
+
+Chaque groupe lit le topic selon ses propres offsets. Le groupe Payment peut traiter l'événement pour simuler un paiement et le groupe Notification peut traiter le même événement pour simuler une notification, sans se répartir ces actions entre eux.
+
+### Question
+
+Que se passe-t-il si deux consumers appartiennent au même groupe plutôt qu'à des groupes différents ?
+
+### Réponse
+
+Dans un même groupe, les consumers se partagent les partitions; une partition est attribuée à un seul consumer actif à la fois. Des groupes distincts ont chacun leur propre lecture et peuvent donc traiter chacun le même record.
+
+### Question
+
+Quel est le lien entre topic, partition et consumer group ?
+
+### Réponse
+
+Le topic est composé de partitions, chacune étant un journal ordonné de records. Dans chaque groupe, Kafka assigne les partitions aux consumers et conserve séparément l'offset de progression du groupe.
+
+### Question
+
+Pourquoi les consumer groups sont-ils utiles en architecture événementielle ?
+
+### Réponse
+
+Ils isolent les cas d'usage : plusieurs services peuvent réagir au même événement avec leur propre rythme et leur propre progression. Ici, Payment et Notification sont indépendants et ne nécessitent pas de coordination directe.
+
+Le Notification Consumer de ce POC ne réalise aucun envoi externe : il journalise une simulation avec `orderId` et `customerId`.
+
+---
+
 ## Questions Kafka à connaître à l'oral
 
 1. **Qu'est-ce que Kafka ?** Une plateforme distribuée de journal d'événements : les producers écrivent dans des topics et les consumers les lisent.
@@ -532,7 +586,7 @@ Chaque record a un offset dans sa partition. Kafka stocke les offsets validés p
 5. **Qu'est-ce qu'un offset ?** La position d'un record dans une partition; il est suivi séparément pour chaque consumer group.
 6. **Qu'est-ce qu'un consumer ?** Un client qui lit les records d'un topic et exécute un traitement.
 7. **Qu'est-ce qu'un consumer group ?** Un ensemble logique de consumers partageant la lecture des partitions et leurs offsets.
-8. **Même groupe ou groupes différents ?** Dans un même groupe, les consumers se partagent les partitions; des groupes différents reçoivent chacun leur propre lecture du flux.
+8. **Même groupe ou groupes différents ?** Dans un même groupe, les consumers se partagent les partitions; des groupes différents reçoivent chacun le flux indépendamment.
 9. **Comment les partitions sont-elles réparties dans un groupe ?** Kafka assigne chaque partition à un seul consumer actif du groupe; le nombre de consumers utiles en parallèle est limité par le nombre de partitions.
 10. **Que se passe-t-il si un consumer tombe ?** Kafka réassigne ses partitions aux consumers restants du groupe; le groupe reprend selon ses offsets validés.
 11. **À quoi sert la clé d'un record ?** Elle participe au choix de partition; une clé stable permet de diriger les records liés vers la même partition.
@@ -541,11 +595,12 @@ Chaque record a un offset dans sa partition. Kafka stocke les offsets validés p
 14. **Que fait `KafkaTemplate` ?** C'est l'API Spring Kafka utilisée par l'application pour envoyer des records au broker.
 15. **Que fait `@KafkaListener` ?** Il relie une méthode Spring à un topic et à un consumer group afin que Spring Kafka lui transmette les records.
 16. **Comment le Payment Consumer reçoit-il `OrderCreated` ?** Le listener consomme `order-events`; le `JsonDeserializer` Spring Kafka transforme le payload JSON en `OrderCreated`.
-17. **Pourquoi `payment-group` est-il distinct ?** Pour que le traitement de paiement reçoive chaque événement indépendamment d'un éventuel autre groupe, plutôt que de partager les messages avec lui.
-18. **Pourquoi l'API attend-elle avant `201 Created` ?** Elle attend la confirmation du producer Kafka afin de ne pas annoncer une publication réussie avant l'accusé de réception du broker.
-19. **Que se passe-t-il si Kafka est indisponible lors de la publication ?** L'API renvoie `503 Service Unavailable`; elle ne retourne pas de succès 2xx quand la publication n'est pas confirmée.
-20. **« Envoi demandé » signifie-t-il « publication confirmée » ?** Non. `KafkaTemplate.send` lance l'envoi et retourne un future; seule la complétion réussie de ce future confirme l'acceptation Kafka.
-21. **Comment vérifier un record ?** Utiliser Kafka UI pour consulter le topic, ou Kafka CLI, par exemple `kafka-console-consumer` avec `--property print.key=true --property print.partition=true --property print.offset=true`.
-22. **Qu'est-ce que KRaft ? Quelle différence avec ZooKeeper ?** KRaft gère les métadonnées Kafka avec le mécanisme intégré à Kafka; l'ancien mode s'appuyait sur ZooKeeper, absent de ce POC.
-23. **Que représente le traitement de paiement de ce POC ?** Une simple simulation journalisée avec l'identifiant et le montant; aucun paiement réel n'est exécuté.
-24. **Pourquoi éviter la logique métier complexe dans le listener ?** Un listener devrait surtout adapter et déléguer le message; séparer le traitement facilite les tests, la lisibilité et l'évolution.
+17. **Pourquoi `payment-group` et `notification-group` sont-ils distincts ?** Chaque groupe reçoit le même événement et avance avec ses propres offsets; leurs traitements ne se partagent donc pas les messages.
+18. **Les offsets sont-ils partagés entre consumer groups ?** Non. Chaque groupe suit sa progression séparément, ce qui permet à un nouveau cas d'usage de lire indépendamment le topic.
+19. **Pourquoi l'API attend-elle avant `201 Created` ?** Elle attend la confirmation du producer Kafka afin de ne pas annoncer une publication réussie avant l'accusé de réception du broker.
+20. **Que se passe-t-il si Kafka est indisponible lors de la publication ?** L'API renvoie `503 Service Unavailable`; elle ne retourne pas de succès 2xx quand la publication n'est pas confirmée.
+21. **« Envoi demandé » signifie-t-il « publication confirmée » ?** Non. `KafkaTemplate.send` lance l'envoi et retourne un future; seule la complétion réussie de ce future confirme l'acceptation Kafka.
+22. **Comment vérifier un record ?** Utiliser Kafka UI pour consulter le topic, ou Kafka CLI, par exemple `kafka-console-consumer` avec `--property print.key=true --property print.partition=true --property print.offset=true`.
+23. **Qu'est-ce que KRaft ? Quelle différence avec ZooKeeper ?** KRaft gère les métadonnées Kafka avec le mécanisme intégré à Kafka; l'ancien mode s'appuyait sur ZooKeeper, absent de ce POC.
+24. **Que représentent les actions Payment et Notification ?** Des simulations journalisées avec les champs utiles de l'événement; aucun paiement ni envoi externe n'est exécuté.
+25. **Pourquoi éviter la logique métier complexe dans le listener ?** Un listener devrait surtout adapter et déléguer le message; séparer le traitement facilite les tests, la lisibilité et l'évolution.

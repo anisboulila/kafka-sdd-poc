@@ -18,7 +18,7 @@
 ## 4. Implement independent simulated consumers
 
 - [x] 4.1 Implement the Payment Consumer with its own consumer group and a local simulated payment action; verify a consumer test observes the action for a published event.
-- [ ] 4.2 Implement the Notification Consumer with a different consumer group and a local simulated notification action; verify a consumer test observes the action for the same published event independently.
+- [x] 4.2 Implement the Notification Consumer with a different consumer group and a local simulated notification action; verify a consumer test observes the action for the same published event independently.
 - [ ] 4.3 Document both consumer responsibilities, their separate group behavior, and the intentional absence of real integrations; verify the guide explains why both groups receive the event.
 
 ## 5. Verify the complete local flow
