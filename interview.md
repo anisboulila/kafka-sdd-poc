@@ -710,3 +710,58 @@ Le topic a actuellement une seule partition. Le parcours démontre les consumer 
 10. **Quel est le rôle d'une partition ?** C'est un journal ordonné de records. Le POC en utilise une; l'étude du parallélisme multi-partitions est différée.
 11. **Producer et consumer : quelle différence ?** Le producer écrit des records dans un topic; les consumers les lisent et exécutent leur traitement.
 12. **Qu'est-ce que KRaft et pourquoi pas ZooKeeper ?** KRaft gère les métadonnées avec le mécanisme intégré à Kafka; le POC local évite le service ZooKeeper.
+
+---
+
+## Fiabilité du producer et du consumer : ce que le POC fait réellement (tâche 1.1)
+
+> Cette section décrit l'état **actuel** du POC, vérifié par `KafkaEffectiveDefaultsTest`. Rien n'est encore configuré explicitement : la tâche 1.2 le fera.
+
+### Valeurs effectives découvertes (producer, client Kafka 3.9.1)
+
+| Paramètre | Valeur effective | Source |
+|---|---|---|
+| `acks` | `all` (stocké `-1` par le client) | défaut du client Kafka |
+| `enable.idempotence` | `true` | défaut du client Kafka |
+| `retries` | `2147483647` | défaut du client Kafka |
+| `delivery.timeout.ms` | `120000` (2 min) | défaut du client Kafka |
+| `max.block.ms` | `60000` (1 min) | défaut du client Kafka |
+
+Aucune de ces clés n'est dans `application.properties` : ce sont des **défauts**, pas une configuration choisie par le POC.
+
+### Consumer (Payment et Notification)
+
+- Commit d'offset : `enable.auto.commit=false` au runtime, mode d'acquittement Spring `BATCH` : l'offset est validé **après** que le listener a traité les records du `poll()`.
+- Gestion d'erreur : aucun error handler configuré, donc le `DefaultErrorHandler` de Spring Kafka s'applique : **10 livraisons au total** (9 retries) sans délai, puis le record est seulement journalisé et **ignoré**. Pas de DLT.
+- `auto.offset.reset=latest` par défaut (un nouveau groupe ne lit pas l'historique).
+
+### Rappel théorique : à quoi servent ces paramètres
+
+- **`acks`** : combien d'accusés le broker doit donner avant de confirmer (`0` aucun, `1` le leader, `all` tous les replicas in-sync). Plus c'est strict, plus la durabilité augmente et plus la latence aussi.
+- **`enable.idempotence`** : le broker écarte les doublons dus aux retries du producer (par partition, pendant la vie du producer). Exige `acks=all`.
+- **`retries`** : nombre de réenvois après une erreur transitoire. En pratique, c'est `delivery.timeout.ms` qui borne le temps total.
+- **`delivery.timeout.ms`** : durée maximale entre l'envoi (`send`) et le résultat final, succès ou échec, retries compris.
+- **`max.block.ms`** : durée maximale pendant laquelle `send()` peut bloquer (métadonnées indisponibles, buffer plein) avant de lever une exception.
+
+### Propriété Spring Boot vs configuration effective du client
+
+Une propriété `spring.kafka.producer.*` n'est qu'une **entrée** transmise au client Kafka. Si elle est absente, le client applique son défaut interne, et c'est ce défaut qui compte. Il faut donc lire la configuration **effective** (log `ProducerConfig values`, ou `new ProducerConfig(...)`) plutôt que supposer. Piège observé : `ConsumerFactory.isAutoCommit()` renvoie `true` (défaut brut du client) alors que le conteneur Spring démarre les vrais consumers avec `enable.auto.commit=false`.
+
+### Comportement actuel vs théorie vs à venir
+
+| | Contenu |
+|---|---|
+| **Comportement actuel du POC** | Producer déjà `acks=all` + idempotent par défaut ; `send().get()` sans borne explicite (jusqu'à environ 60 s à 120 s) ; consumers en at-least-once ; échec Payment : 10 tentatives puis perte silencieuse. |
+| **Théorie Kafka** | `acks=0/1/all`, replicas, ISR, `min.insync.replicas` : un seul broker ici, donc leurs effets de durabilité ne sont pas démontrables. |
+| **Tâche 1.2 (pas encore faite)** | Rendre ces valeurs explicites dans la configuration et borner l'attente HTTP. Ce n'est **pas** encore configuré. |
+
+### Questions d'entretien dérivées
+
+1. **Quelle est la valeur par défaut de `acks` ?** Avec un client Kafka récent (3.x), `all`, et l'idempotence est activée par défaut. Il faut vérifier la version du client, car les anciens clients utilisaient `1`.
+2. **Que contrôle `acks` ?** Le niveau d'accusé exigé du broker avant de considérer l'envoi réussi : `0` aucun, `1` leader seul, `all` tous les replicas in-sync.
+3. **À quoi sert l'idempotence du producer ?** À éviter les doublons créés par les retries du producer vers une même partition. Elle ne protège pas contre un doublon créé par l'application elle-même (deux appels distincts).
+4. **`retries` ou `delivery.timeout.ms` : lequel limite vraiment ?** Le second : les retries continuent jusqu'à ce délai total écoulé.
+5. **Que se passe-t-il si Kafka est arrêté pendant `send()` ?** `send()` peut bloquer jusqu'à `max.block.ms` (métadonnées), puis l'envoi échoue au plus tard après `delivery.timeout.ms`. Dans le POC, l'API retourne alors `503`, mais sans borne explicite l'attente reste longue.
+6. **Quand le consumer valide-t-il son offset ici ?** Après le traitement du listener (mode `BATCH`, auto-commit désactivé). Un crash avant le commit provoque un retraitement : c'est de l'at-least-once.
+7. **Que fait Spring Kafka quand un listener échoue, sans configuration ?** Il réessaie jusqu'à 10 livraisons sans délai, puis journalise et saute le record ; il n'y a pas de DLT, donc le message est perdu pour ce groupe.
+8. **Pourquoi lire la configuration effective ?** Une propriété Spring absente n'est pas « non configurée » : le client applique un défaut, et seul le log ou un test montre la valeur réellement utilisée.

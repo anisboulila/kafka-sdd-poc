@@ -2,7 +2,7 @@
 
 ## 1. Bootstrap the Spring Boot application
 
-- [ ] 1.1 Create the Java 17 Maven application with Spring Boot 3.x and Spring Kafka dependencies; verify the project builds with `mvn test`.
+- [x] 1.1 Create the Java 17 Maven application with Spring Boot 3.x and Spring Kafka dependencies; verify the project builds with `mvn test`.
 
 ## 2. Provide the local Kafka broker
 
