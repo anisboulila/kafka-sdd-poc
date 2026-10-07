@@ -867,3 +867,20 @@ Si Kafka confirme mais que la réponse `201` est perdue, le message est publié 
 4. **Retry ou DLT ?** Le retry traite une erreur supposée temporaire ; le DLT reçoit le record quand les retries sont épuisés. Le DLT n'est pas rejoué automatiquement.
 5. **Que coûte un retry bloquant ?** Pendant les tentatives, la partition ne progresse pas : les records suivants attendent. C'est le compromis du `DefaultErrorHandler`, par rapport à des topics de retry non bloquants (hors scope).
 6. **Pourquoi traiter les messages malformés à part ?** L'erreur survient à la désérialisation, avant l'appel du listener : un retry n'aide pas, car le même payload échouera toujours (poison pill). Le remède usuel est un `ErrorHandlingDeserializer` avec envoi au DLT ; il n'est pas implémenté ici, et son comportement actuel dans le POC n'a pas été vérifié.
+
+---
+
+## Déclencheur d'échec Payment simulé (tâche 2.2)
+
+> Implémenté : le **déclencheur** uniquement. Les retries consumer et le DLT ne sont pas encore configurés (tâche 2.3) : un échec Payment subit encore le comportement par défaut de Spring (10 livraisons, puis le record est ignoré).
+
+- **Mécanisme** : `app.payment.fail-customer-id` (vide par défaut). Si le `customerId` de l'événement lui est égal, `PaymentConsumer` lève une `IllegalStateException` ; sinon le paiement simulé s'exécute normalement. Une valeur vide ne fait jamais échouer.
+- **Pourquoi une simulation** : pour provoquer à volonté une erreur de traitement et pouvoir observer les retries et le DLT ; ce n'est pas de la logique de paiement. `OrderCreated` et `POST /orders` ne changent pas.
+- **Déterministe** : l'échec se reproduit à chaque livraison du même événement, ce qui permet d'épuiser les retries. Un échec aléatoire ne le permettrait pas.
+- **Exemple** : démarrer l'application avec `--app.payment.fail-customer-id=customer-fail` puis créer une commande avec ce `customerId` ; Notification, lui, traite toujours l'événement.
+
+### Questions d'entretien
+
+1. **Comment faire échouer un consumer pour tester la gestion d'erreur ?** Avec un déclencheur de simulation explicite et déterministe (propriété), plutôt qu'un échec aléatoire ou un changement du contrat de l'événement.
+2. **Pourquoi une exception du listener est-elle importante ?** C'est elle qui déclenche le error handler de Spring Kafka ; sans exception, le record est considéré comme traité et l'offset avance.
+3. **Pourquoi le déclencheur est-il vide par défaut ?** Pour que le comportement normal du POC reste inchangé ; la panne n'existe que lorsqu'on l'active volontairement.

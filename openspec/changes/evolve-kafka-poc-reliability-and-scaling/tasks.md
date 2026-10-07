@@ -11,7 +11,7 @@ Each group lands its own tests and documentation (`README.md` / `interview.md`).
 ## 2. Payment retry and Dead Letter Topic
 
 - [x] 2.1 Confirm decisions D2, D3 and D9 (failure trigger, retry/backoff values, DLT name and partitions, malformed-message handling); verify the decisions are written in design.md.
-- [ ] 2.2 Add the simulated Payment failure trigger; verify a unit test shows a matching event fails and a non-matching event succeeds, with no change to `OrderCreated` or `POST /orders`.
+- [x] 2.2 Add the simulated Payment failure trigger; verify a unit test shows a matching event fails and a non-matching event succeeds, with no change to `OrderCreated` or `POST /orders`.
 - [ ] 2.3 Configure bounded retry with backoff and DLT publication for the Payment listener only, and declare the DLT topic; verify an integration test with unique group ids shows retries, then a record on the DLT with the original key and payload.
 - [ ] 2.4 Verify Notification independence: an integration test shows Notification processes the failing event once while Payment is retrying/dead-lettered, and Payment continues with the next event.
 - [ ] 2.5 Document the failure scenario, how to observe the DLT with Kafka CLI/Kafka UI, and retry vs DLT in `README.md` and `interview.md`; verify the documented commands match the implemented topic name. (Documented commands are checked by the user, not by the assistant.)
