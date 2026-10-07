@@ -23,8 +23,9 @@ State verified in the repository (see proposal.md for motivation):
 
 Decisions marked **[Proposed]** are recommendations, not validated. They are listed again in Open questions.
 
-### D1. Producer reliability: explicit configuration, bounded wait **[Proposed]**
-Set explicitly in `application.properties`: `acks=all`, `enable.idempotence=true`, `delivery.timeout.ms` and `max.block.ms` to small values suitable for local use, and bound `send(...).get(timeout)` so the HTTP wait is shorter than the producer's internal delivery window. Timeouts map to the existing `503`. Rationale: the three stages (record accepted by the producer buffer -> confirmed by the broker -> HTTP response) become independently explainable and testable. Alternative: keep implicit defaults and only document them (less to change, but nothing observable and the unbounded wait stays).
+### D1. Producer reliability: explicit configuration, bounded wait **[Decided and implemented in task 1.2]**
+Set explicitly in `application.properties`: `acks=all`, `enable.idempotence=true`, `retries=2147483647`, `delivery.timeout.ms=5000`, `request.timeout.ms=3000` (Kafka requires `delivery.timeout.ms >= request.timeout.ms + linger.ms`, and the 30 s default of `request.timeout.ms` would otherwise be rejected), `max.block.ms=2000`. The HTTP wait is `app.orders.publication-timeout=6s`, applied with `send(...).get(timeout)`; it is deliberately just above `delivery.timeout.ms` so the producer normally reports its own definitive result first and the HTTP bound is only a safety net. A `TimeoutException` is mapped to `OrderPublicationException`, hence the existing `503`. Worst case for a request: up to `max.block.ms` inside `send()` plus the `get` timeout (about 8 s), instead of about 1 to 3 minutes before. Note: after a timeout the outcome is unknown (the record may still reach Kafka), a known limit documented, not solved here.
+Rationale: the three stages (record accepted by the producer buffer -> confirmed by the broker -> HTTP response) become independently explainable and testable. Alternative: keep implicit defaults and only document them (less to change, but nothing observable and the unbounded wait stays).
 `acks=0/1` are NOT implemented as modes; they are documented as theory because one broker cannot show their durability difference. A test may assert the configured values only.
 
 ### D2. Failure trigger for Payment **[Proposed]**
@@ -82,5 +83,5 @@ The questions below affect what gets built and MUST be validated by the user bef
 5. Failure trigger design (D2).
 6. 1-partition vs 2-partition test strategy: temporary topics (proposed) versus altering `order-events` (D5).
 7. Malformed message handling (D9).
-8. Exact producer values (`delivery.timeout.ms`, `max.block.ms`, HTTP wait) and whether `acks=all` is stated in config although it is the expected default (D1).
+8. ~~Exact producer values and HTTP wait bound~~ Decided in task 1.2 (D1): delivery 5 s, request 3 s, max.block 2 s, HTTP wait 6 s; `acks=all` and idempotence stay explicit.
 9. ~~Effective current defaults of the producer and Spring error handling~~ Verified in task 1.1 (see Context). Remaining decision: whether to keep `acks=all` and idempotence explicit even though they already match the defaults (D1: proposed yes, for visibility).

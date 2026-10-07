@@ -13,10 +13,12 @@ import static org.mockito.Mockito.when;
 
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -30,6 +32,8 @@ import org.springframework.kafka.support.SendResult;
 class OrderServiceTest {
 
     private static final String CREATED_AT = "2026-10-05T16:00:00Z";
+    // Short bound so the timeout test is fast; production value comes from app.orders.publication-timeout.
+    private static final Duration TIMEOUT = Duration.ofMillis(300);
 
     @Mock
     private KafkaTemplate<String, OrderCreated> kafkaTemplate;
@@ -37,7 +41,7 @@ class OrderServiceTest {
     @Test
     void waitsForKafkaConfirmationBeforeReturningCreatedEvent() throws Exception {
         Clock clock = Clock.fixed(Instant.parse(CREATED_AT), ZoneOffset.UTC);
-        OrderService orderService = new OrderService(kafkaTemplate, clock);
+        OrderService orderService = new OrderService(kafkaTemplate, clock, TIMEOUT);
         CompletableFuture<SendResult<String, OrderCreated>> publication = new CompletableFuture<>();
         when(kafkaTemplate.send(eq("order-events"), anyString(), any(OrderCreated.class)))
                 .thenReturn(publication);
@@ -69,7 +73,7 @@ class OrderServiceTest {
 
     @Test
     void propagatesExceptionalKafkaPublication() {
-        OrderService orderService = new OrderService(kafkaTemplate, Clock.systemUTC());
+        OrderService orderService = new OrderService(kafkaTemplate, Clock.systemUTC(), TIMEOUT);
         CompletableFuture<SendResult<String, OrderCreated>> publication = new CompletableFuture<>();
         publication.completeExceptionally(new KafkaException("Kafka unavailable"));
         when(kafkaTemplate.send(eq("order-events"), anyString(), any(OrderCreated.class)))
@@ -82,8 +86,27 @@ class OrderServiceTest {
     }
 
     @Test
+    void failsWithPublicationExceptionWhenKafkaDoesNotConfirmInTime() {
+        OrderService orderService = new OrderService(kafkaTemplate, Clock.systemUTC(), TIMEOUT);
+        // A future that never completes simulates a broker that has not acknowledged yet:
+        // the record is "sent" (stage 1) but never "confirmed" (stage 2).
+        when(kafkaTemplate.send(eq("order-events"), anyString(), any(OrderCreated.class)))
+                .thenReturn(new CompletableFuture<>());
+
+        long start = System.nanoTime();
+        OrderPublicationException failure = assertThrows(
+                OrderPublicationException.class,
+                () -> orderService.createOrder(
+                        new CreateOrderRequest("customer-456", new BigDecimal("19.95"))));
+
+        // The wait is bounded by the configured timeout, and the cause is the timeout itself.
+        assertTrue(failure.getCause() instanceof TimeoutException);
+        assertTrue(Duration.ofNanos(System.nanoTime() - start).toMillis() < 5_000);
+    }
+
+    @Test
     void wrapsSynchronousKafkaPublicationFailure() {
-        OrderService orderService = new OrderService(kafkaTemplate, Clock.systemUTC());
+        OrderService orderService = new OrderService(kafkaTemplate, Clock.systemUTC(), TIMEOUT);
         when(kafkaTemplate.send(eq("order-events"), anyString(), any(OrderCreated.class)))
                 .thenThrow(new KafkaException("Kafka unavailable"));
 
@@ -95,7 +118,7 @@ class OrderServiceTest {
 
     @Test
     void restoresInterruptAndPropagatesInterruptedPublication() {
-        OrderService orderService = new OrderService(kafkaTemplate, Clock.systemUTC());
+        OrderService orderService = new OrderService(kafkaTemplate, Clock.systemUTC(), TIMEOUT);
         when(kafkaTemplate.send(eq("order-events"), anyString(), any(OrderCreated.class)))
                 .thenReturn(new CompletableFuture<>());
 

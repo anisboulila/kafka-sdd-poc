@@ -24,9 +24,8 @@ import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.listener.ListenerExecutionFailedException;
 import org.springframework.kafka.listener.MessageListenerContainer;
 
-// Task 1.1 (evolve-kafka-poc-reliability-and-scaling): read-only inspection.
-// It documents what the Kafka client and Spring Kafka ACTUALLY use today, so that
-// design.md records verified facts instead of assumptions. It changes no configuration.
+// Task 1.1 introduced this read-only inspection of what the Kafka client and Spring Kafka
+// ACTUALLY use; task 1.2 reuses it to prove the producer values are now explicit and effective.
 // Listeners are not started: the effective settings are readable without a broker.
 @SpringBootTest(properties = "spring.kafka.listener.auto-startup=false")
 class KafkaEffectiveDefaultsTest {
@@ -41,16 +40,17 @@ class KafkaEffectiveDefaultsTest {
     private KafkaListenerEndpointRegistry listenerRegistry;
 
     @Test
-    void producerUsesKafkaClientDefaultsBecauseNothingIsConfigured() {
+    void producerReliabilitySettingsAreExplicitlyConfigured() {
         // What Spring Boot / our application.properties hands to the Kafka client.
         // Interview point: a Spring property is only an INPUT; if a key is absent here,
         // the Kafka client falls back to its own built-in default.
         Map<String, Object> springLevel = producerFactory.getConfigurationProperties();
-        assertFalse(springLevel.containsKey(ProducerConfig.ACKS_CONFIG));
-        assertFalse(springLevel.containsKey(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG));
-        assertFalse(springLevel.containsKey(ProducerConfig.RETRIES_CONFIG));
-        assertFalse(springLevel.containsKey(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG));
-        assertFalse(springLevel.containsKey(ProducerConfig.MAX_BLOCK_MS_CONFIG));
+        // Since task 1.2 (decision D1) these keys are set explicitly in application.properties.
+        assertTrue(springLevel.containsKey(ProducerConfig.ACKS_CONFIG));
+        assertTrue(springLevel.containsKey(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG));
+        assertTrue(springLevel.containsKey(ProducerConfig.RETRIES_CONFIG));
+        assertTrue(springLevel.containsKey(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG));
+        assertTrue(springLevel.containsKey(ProducerConfig.MAX_BLOCK_MS_CONFIG));
 
         // KafkaProducer parses its settings with ProducerConfig, so building the same
         // object here gives the effective values (defaults applied, idempotence resolved).
@@ -66,8 +66,9 @@ class KafkaEffectiveDefaultsTest {
         assertEquals("-1", effective.getString(ProducerConfig.ACKS_CONFIG));
         assertTrue(effective.getBoolean(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG));
         assertEquals(Integer.MAX_VALUE, effective.getInt(ProducerConfig.RETRIES_CONFIG));
-        assertEquals(120_000, effective.getInt(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG));
-        assertEquals(60_000L, effective.getLong(ProducerConfig.MAX_BLOCK_MS_CONFIG));
+        assertEquals(5_000, effective.getInt(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG));
+        assertEquals(3_000, effective.getInt(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG));
+        assertEquals(2_000L, effective.getLong(ProducerConfig.MAX_BLOCK_MS_CONFIG));
     }
 
     @Test

@@ -765,3 +765,46 @@ Une propriété `spring.kafka.producer.*` n'est qu'une **entrée** transmise au 
 6. **Quand le consumer valide-t-il son offset ici ?** Après le traitement du listener (mode `BATCH`, auto-commit désactivé). Un crash avant le commit provoque un retraitement : c'est de l'at-least-once.
 7. **Que fait Spring Kafka quand un listener échoue, sans configuration ?** Il réessaie jusqu'à 10 livraisons sans délai, puis journalise et saute le record ; il n'y a pas de DLT, donc le message est perdu pour ce groupe.
 8. **Pourquoi lire la configuration effective ?** Une propriété Spring absente n'est pas « non configurée » : le client applique un défaut, et seul le log ou un test montre la valeur réellement utilisée.
+
+---
+
+## Producer reliability rendue explicite (tâche 1.2)
+
+> Contrairement à la tâche 1.1 (valeurs par défaut du client), ces valeurs sont maintenant **configurées** dans `application.properties` et vérifiées par `KafkaEffectiveDefaultsTest`.
+
+### Valeurs configurées et pourquoi
+
+| Paramètre | Valeur | Rôle |
+|---|---|---|
+| `acks` | `all` | Le leader attend tous les replicas in-sync (ici, un seul broker). |
+| `enable.idempotence` | `true` | Écarte les doublons causés par les retries du producer. |
+| `retries` | `2147483647` | Quasi illimité : c'est le délai total qui borne. |
+| `delivery.timeout.ms` | `5000` | Durée maximale entre `send()` et le résultat final, retries compris. |
+| `request.timeout.ms` | `3000` | Attente d'une réponse du broker pour une requête. |
+| `max.block.ms` | `2000` | Durée maximale pendant laquelle `send()` bloque (métadonnées, buffer). |
+| `app.orders.publication-timeout` | `6s` | Attente HTTP de la confirmation Kafka (propriété de l'application, pas du client Kafka). |
+
+Contrainte Kafka : `delivery.timeout.ms >= request.timeout.ms + linger.ms`. Sans baisser `request.timeout.ms` (défaut 30 s), `delivery.timeout.ms=5000` serait refusé au démarrage du producer.
+
+### Les trois étapes d'une publication
+
+1. **Envoyé au producer** : `send()` rend la main, le record est dans le buffer. Rien n'est garanti.
+2. **Confirmé par Kafka** : le `Future` se termine avec succès après l'accusé du broker.
+3. **Réponse HTTP** : `201` seulement après l'étape 2.
+
+### Comportement en cas de timeout
+
+- Si Kafka ne confirme pas dans les 6 s, `get(timeout)` lève `TimeoutException`, transformée en `OrderPublicationException` puis en `503`.
+- Le temps d'attente maximal d'une requête est d'environ `max.block.ms` + attente du `Future` (environ 8 s), au lieu de 1 à 3 minutes avec les défauts.
+- Après un timeout, le résultat est **inconnu** : le record peut quand même arriver dans Kafka. Le client peut donc réessayer et créer un doublon métier. L'idempotence du producer ne l'empêche pas (deux commandes distinctes ont deux `orderId`).
+
+### Questions d'entretien dérivées
+
+1. **Pourquoi `delivery.timeout.ms` doit-il être supérieur à `request.timeout.ms` ?** Il couvre l'envoi, les retries et les attentes ; Kafka exige `delivery.timeout.ms >= request.timeout.ms + linger.ms`, sinon le producer refuse de démarrer.
+2. **Pourquoi borner l'attente HTTP ?** Sans borne, une panne Kafka bloquerait les threads HTTP pendant des minutes ; on préfère échouer vite avec `503`.
+3. **Pourquoi 6 s alors que `delivery.timeout.ms` vaut 5 s ?** Pour laisser le producer annoncer son propre échec définitif ; la borne HTTP n'est qu'un filet de sécurité.
+4. **Que veut dire un timeout sur `get()` ?** Que la confirmation n'est pas arrivée, pas que l'envoi a échoué : l'état est incertain.
+5. **L'idempotence du producer évite-t-elle un doublon après un retry du client HTTP ?** Non : elle ne protège que les retries internes du producer ; un nouvel appel `POST /orders` crée un nouvel `orderId`.
+6. **Quelle différence entre `max.block.ms` et `delivery.timeout.ms` ?** Le premier borne le blocage de l'appel `send()` ; le second borne le temps entre l'envoi et le résultat final.
+
+*La théorie complète (`acks=0/1/all`, réplication, ISR, `min.insync.replicas`) viendra avec la tâche 1.3.*
