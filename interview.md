@@ -476,3 +476,76 @@ Pourquoi deux requêtes `POST` créent-elles deux records et deux offsets ?
 ### Réponse
 
 Chaque requête réussie crée un nouvel événement avec un `orderId` distinct, puis le producer envoie un nouveau record. Kafka attribue à chaque record une position dans la partition; les deux offsets sont donc différents et augmentent au fil des écritures. La record key ne déduplique pas les messages.
+
+---
+
+## 15. Consumer Payment
+
+### Question
+
+Qu'est-ce qu'un consumer Kafka et que fait `@KafkaListener` ?
+
+### Réponse
+
+Un consumer lit les records d'un topic Kafka. Dans Spring Kafka, `@KafkaListener` déclare une méthode appelée quand un record correspondant est reçu; ici, elle écoute `order-events` et reçoit un `OrderCreated` désérialisé depuis le JSON.
+
+### Question
+
+Pourquoi le Payment Consumer utilise-t-il `payment-group` ?
+
+### Réponse
+
+Un consumer group est l'identité de consommation dont Kafka suit les offsets et à laquelle il assigne les partitions. Le Payment Consumer utilise son propre groupe `payment-group` afin de recevoir les événements indépendamment des autres traitements futurs, comme Notification.
+
+### Question
+
+Quel est le lien entre topic, partition, consumer et consumer group ?
+
+### Réponse
+
+Un topic est un flux composé d'une ou plusieurs partitions. Dans un même groupe, Kafka répartit les partitions entre les consumers actifs; une partition n'est attribuée qu'à un seul consumer de ce groupe à la fois. Des groupes différents lisent le même topic indépendamment et suivent chacun leur progression.
+
+### Question
+
+Que fait le Payment Consumer de l'événement ?
+
+### Réponse
+
+Il journalise une simulation de paiement avec `orderId` et `amount`. Ce n'est ni un paiement réel ni une intégration métier. Le listener reste simple; une logique métier plus complexe devrait être déléguée à un service pour faciliter tests et séparation des responsabilités.
+
+### Question
+
+Comment Kafka suit-il la progression du groupe ?
+
+### Réponse
+
+Chaque record a un offset dans sa partition. Kafka stocke les offsets validés par consumer group; ils permettent au groupe de reprendre sa lecture après le dernier offset enregistré.
+
+---
+
+## Questions Kafka à connaître à l'oral
+
+1. **Qu'est-ce que Kafka ?** Une plateforme distribuée de journal d'événements : les producers écrivent dans des topics et les consumers les lisent.
+2. **Qu'est-ce qu'un broker Kafka ?** Un serveur Kafka qui stocke les partitions et sert les lectures et écritures des clients.
+3. **Qu'est-ce qu'un topic ?** Un flux logique de records Kafka, réparti en partitions.
+4. **Qu'est-ce qu'une partition et pourquoi en utiliser ?** Un journal ordonné de records; plusieurs partitions permettent de répartir stockage et traitement.
+5. **Qu'est-ce qu'un offset ?** La position d'un record dans une partition; il est suivi séparément pour chaque consumer group.
+6. **Qu'est-ce qu'un consumer ?** Un client qui lit les records d'un topic et exécute un traitement.
+7. **Qu'est-ce qu'un consumer group ?** Un ensemble logique de consumers partageant la lecture des partitions et leurs offsets.
+8. **Même groupe ou groupes différents ?** Dans un même groupe, les consumers se partagent les partitions; des groupes différents reçoivent chacun leur propre lecture du flux.
+9. **Comment les partitions sont-elles réparties dans un groupe ?** Kafka assigne chaque partition à un seul consumer actif du groupe; le nombre de consumers utiles en parallèle est limité par le nombre de partitions.
+10. **Que se passe-t-il si un consumer tombe ?** Kafka réassigne ses partitions aux consumers restants du groupe; le groupe reprend selon ses offsets validés.
+11. **À quoi sert la clé d'un record ?** Elle participe au choix de partition; une clé stable permet de diriger les records liés vers la même partition.
+12. **Comment préserver l'ordre ?** Kafka garantit l'ordre à l'intérieur d'une partition. Des records partageant une clé sont normalement dirigés vers la même partition; il n'y a pas d'ordre global entre partitions.
+13. **Producer et consumer : quelle différence ?** Le producer publie des records; le consumer les lit et les traite.
+14. **Que fait `KafkaTemplate` ?** C'est l'API Spring Kafka utilisée par l'application pour envoyer des records au broker.
+15. **Que fait `@KafkaListener` ?** Il relie une méthode Spring à un topic et à un consumer group afin que Spring Kafka lui transmette les records.
+16. **Comment le Payment Consumer reçoit-il `OrderCreated` ?** Le listener consomme `order-events`; le `JsonDeserializer` Spring Kafka transforme le payload JSON en `OrderCreated`.
+17. **Pourquoi `payment-group` est-il distinct ?** Pour que le traitement de paiement reçoive chaque événement indépendamment d'un éventuel autre groupe, plutôt que de partager les messages avec lui.
+18. **Pourquoi l'API attend-elle avant `201 Created` ?** Elle attend la confirmation du producer Kafka afin de ne pas annoncer une publication réussie avant l'accusé de réception du broker.
+19. **Que se passe-t-il si Kafka est indisponible lors de la publication ?** L'API renvoie `503 Service Unavailable`; elle ne retourne pas de succès 2xx quand la publication n'est pas confirmée.
+20. **« Envoi demandé » signifie-t-il « publication confirmée » ?** Non. `KafkaTemplate.send` lance l'envoi et retourne un future; seule la complétion réussie de ce future confirme l'acceptation Kafka.
+21. **Comment vérifier un record ?** Utiliser Kafka UI pour consulter le topic, ou Kafka CLI, par exemple `kafka-console-consumer` avec `--property print.key=true --property print.partition=true --property print.offset=true`.
+22. **Qu'est-ce que KRaft ? Quelle différence avec ZooKeeper ?** KRaft gère les métadonnées Kafka avec le mécanisme intégré à Kafka; l'ancien mode s'appuyait sur ZooKeeper, absent de ce POC.
+23. **Que représente le traitement de paiement de ce POC ?** Une simple simulation journalisée avec l'identifiant et le montant; aucun paiement réel n'est exécuté.
+24. **Pourquoi éviter la logique métier complexe dans le listener ?** Un listener devrait surtout adapter et déléguer le message; séparer le traitement facilite les tests, la lisibilité et l'évolution.
