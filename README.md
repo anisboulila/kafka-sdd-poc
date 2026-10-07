@@ -62,6 +62,56 @@ For example, a publication failure returns a non-2xx problem response:
 }
 ```
 
+### Producer reliability: three stages, `acks` and replication theory
+
+#### Accepted, confirmed, responded
+
+| Stage | What it means | Guarantee |
+|---|---|---|
+| 1. Accepted by the producer | `KafkaTemplate.send(...)` returned a future; the record is in the producer's buffer. | None yet: Kafka has not confirmed anything. |
+| 2. Confirmed by Kafka | The future completed successfully after the broker acknowledged the record (per `acks`). | The record is published, within the limits of `acks` and replication. |
+| 3. HTTP response | `OrderService` waits up to `app.orders.publication-timeout` (6 s) for stage 2, then the API answers. | `201` only after stage 2. |
+
+```text
+confirmation received in time   -> HTTP 201 Created
+confirmation not obtained       -> HTTP 503 (failure, interruption, or timeout)
+```
+
+If Kafka confirms but the `201` response never reaches the client (network cut, client timeout), the event **is** published while the client believes the request failed. A retry then creates a second order with a new `orderId`. This POC has no transaction spanning HTTP and Kafka; avoiding this duplicate needs an idempotency key supplied by the client, which is out of scope. The same uncertainty exists after a `503` caused by a timeout: the record may still reach Kafka.
+
+#### What is configured and observed in this POC
+
+| Item | Value (source: `application.properties`, checked by `KafkaEffectiveDefaultsTest`) |
+|---|---|
+| Brokers / partitions / replication factor | 1 / 1 / 1 |
+| `acks` | `all` |
+| `enable.idempotence` | `true` |
+| `retries` | `2147483647` |
+| `delivery.timeout.ms` | `5000` |
+| `request.timeout.ms` | `3000` |
+| `max.block.ms` | `2000` |
+| `app.orders.publication-timeout` | `6s` (application property, not a Kafka client setting) |
+
+Do not confuse them: `acks` is the acknowledgement level; idempotence prevents duplicates caused by the producer's own retries; `retries` is the number of re-send attempts; `delivery.timeout.ms` bounds the whole delivery of a record; `app.orders.publication-timeout` is how long our HTTP request waits.
+
+#### Theory only (not demonstrated: the local setup has a single broker)
+
+- `acks=0`: the producer does not wait for any acknowledgement. Lowest latency; the record can be lost without the producer knowing.
+- `acks=1`: the partition leader acknowledges after writing locally. The record can still be lost if the leader fails before replicas copy it.
+- `acks=all`: the leader waits for the in-sync replicas required by the topic configuration. Strongest of the three in terms of replication wait. It does not by itself guarantee that a record is never lost.
+- **Leader / replica**: each partition has one leader replica handling writes; other replicas are copies that follow the leader.
+
+```text
+Broker 1: Partition 0 (Leader)
+Broker 2: Partition 0 (Replica)     <- theoretical example, NOT our setup
+Broker 3: Partition 0 (Replica)
+```
+
+- **ISR (In-Sync Replicas)**: the replicas, leader included, that are sufficiently up to date with the leader. `acks=all` is evaluated against the ISR.
+- **`min.insync.replicas`**: minimum ISR size required to accept a write with `acks=all`. Example: `replication.factor=3`, `min.insync.replicas=2`, `acks=all`: if the ISR shrinks to 1, writes are rejected rather than accepted with weaker durability.
+
+With one broker and replication factor 1, `acks=1` and `acks=all` behave the same, and the ISR scenario above cannot be reproduced here.
+
 ### Verify the event
 
 Send a request from PowerShell:

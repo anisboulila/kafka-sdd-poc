@@ -808,3 +808,62 @@ Contrainte Kafka : `delivery.timeout.ms >= request.timeout.ms + linger.ms`. Sans
 6. **Quelle différence entre `max.block.ms` et `delivery.timeout.ms` ?** Le premier borne le blocage de l'appel `send()` ; le second borne le temps entre l'envoi et le résultat final.
 
 *La théorie complète (`acks=0/1/all`, réplication, ISR, `min.insync.replicas`) viendra avec la tâche 1.3.*
+
+---
+
+## Étapes de publication et théorie `acks` / réplication (tâche 1.3)
+
+> Ce qui est **réellement configuré et observé** dans le POC : 1 broker, 1 partition, replication factor 1, `acks=all`, idempotence activée, `delivery.timeout.ms=5000`, `app.orders.publication-timeout=6s`, `201` après confirmation, `503` sinon. Tout le reste de cette section (réplicas, ISR, `min.insync.replicas`, `acks=0/1`) est de la **théorie non démontrée** avec un seul broker.
+
+### Les trois étapes
+
+1. **Accepté par le producer** : `send()` a rendu un future, le record est dans le buffer ; aucune garantie.
+2. **Confirmé par Kafka** : le future se termine avec succès après l'accusé du broker.
+3. **Réponse HTTP** : `201` seulement après l'étape 2 ; `503` si la confirmation n'arrive pas dans les 6 s (ou en cas d'échec ou d'interruption).
+
+Si Kafka confirme mais que la réponse `201` est perdue, le message est publié alors que le client croit à un échec ; s'il réessaie, une nouvelle commande (nouvel `orderId`) est créée. Ce n'est **pas** une transaction HTTP/Kafka.
+
+### Théorie (non démontrée ici)
+
+- `acks=0` : aucun accusé attendu, risque de perte silencieuse. `acks=1` : le leader accuse après écriture locale, perte possible s'il tombe avant la copie. `acks=all` : le leader attend les replicas in-sync requises.
+- **Leader** : réplica qui traite les écritures d'une partition ; **réplicas** : copies qui suivent le leader.
+- **ISR** : réplicas suffisamment à jour (leader inclus). **`min.insync.replicas`** : taille minimale de l'ISR pour accepter une écriture `acks=all`. Exemple : RF=3, `min.insync.replicas=2`, ISR tombée à 1 : écriture refusée.
+
+### Ne pas confondre
+
+`acks` = niveau d'accusé ; idempotence = pas de doublon dû aux retries du producer ; `retries` = tentatives ; `delivery.timeout.ms` = limite globale de livraison d'un record ; `app.orders.publication-timeout` = attente de notre requête HTTP (propriété applicative).
+
+### Questions d'entretien
+
+1. **Que signifie `acks=all` ?** Le leader attend l'accusé des réplicas in-sync requises avant de confirmer. C'est le niveau d'attente de réplication le plus fort des trois.
+2. **`acks=1` vs `acks=all` ?** Avec `1`, seul le leader accuse : un crash du leader avant réplication perd le record. Avec `all`, les réplicas in-sync doivent l'avoir reçu.
+3. **Qu'est-ce qu'un leader ? Une réplica ?** Le leader gère les écritures d'une partition ; les réplicas en sont des copies qui suivent le leader et peuvent le remplacer.
+4. **Qu'est-ce que l'ISR ?** L'ensemble des réplicas suffisamment à jour avec le leader ; `acks=all` s'évalue sur cet ensemble.
+5. **À quoi sert `min.insync.replicas` ?** À refuser une écriture `acks=all` quand l'ISR est trop petite, plutôt que de réduire silencieusement la durabilité.
+6. **`acks=all` garantit-il seul qu'un message n'est jamais perdu ?** Non. Avec un ISR réduit au leader et `min.insync.replicas=1`, `all` n'apporte rien de plus ; il faut aussi RF > 1 et un `min.insync.replicas` adapté.
+7. **Idempotence producer vs idempotence métier ?** La première évite les doublons dus aux retries du producer vers une partition ; la seconde évite de traiter deux fois le même ordre métier côté consumer ou API.
+8. **Confirmation Kafka vs réponse HTTP ?** La confirmation est l'accusé du broker ; la réponse HTTP est ce que le client reçoit. La seconde peut échouer après la première.
+9. **Kafka confirme mais la réponse HTTP est perdue ?** Le message est publié, le client croit à un échec. Un retry crée un doublon métier ; une clé d'idempotence côté client serait nécessaire (hors scope).
+10. **Pourquoi le POC ne démontre-t-il pas la réplication ?** Un seul broker, une partition, RF=1 : pas de réplica ni d'ISR à observer, donc `acks=1` et `acks=all` se comportent pareil.
+
+---
+
+## Retry consumer, DLT et messages malformés : décisions (tâche 2.1)
+
+> **Décisions uniquement.** Rien n'est encore implémenté : aujourd'hui, un échec Payment subit le comportement par défaut de Spring (10 livraisons sans délai, puis le record est ignoré, sans DLT). L'implémentation viendra en 2.2 et 2.3.
+
+### Décisions retenues (à implémenter)
+
+- **Déclencheur d'échec** : la propriété `app.payment.fail-customer-id` ; un `customerId` égal à cette valeur fait échouer Payment (simulation, pas une logique de paiement).
+- **Retry consumer** : `FixedBackOff` de 1 s, 3 retries (4 livraisons, environ 3 s), pour le consumer Payment uniquement.
+- **DLT** : `order-events.DLT`, 1 partition, replication factor 1, observé mais jamais retraité.
+- **Message malformé** : hors implémentation, expliqué en théorie.
+
+### Questions d'entretien
+
+1. **Retry producer ou retry consumer ?** Le retry producer renvoie un record vers le broker après une erreur d'envoi (`retries`, `delivery.timeout.ms`). Le retry consumer rejoue le traitement d'un record déjà lu après un échec du listener. Les deux sont indépendants.
+2. **Pourquoi réessayer côté consumer ?** Parce que beaucoup d'erreurs sont transitoires (service indisponible, verrou, réseau) : un nouvel essai peut réussir sans intervention.
+3. **Pourquoi un DLT ?** Pour ne pas perdre un record qui échoue toujours et ne pas bloquer la partition : il est mis de côté avec son contexte (topic, partition, offset, exception) pour analyse ou reprise.
+4. **Retry ou DLT ?** Le retry traite une erreur supposée temporaire ; le DLT reçoit le record quand les retries sont épuisés. Le DLT n'est pas rejoué automatiquement.
+5. **Que coûte un retry bloquant ?** Pendant les tentatives, la partition ne progresse pas : les records suivants attendent. C'est le compromis du `DefaultErrorHandler`, par rapport à des topics de retry non bloquants (hors scope).
+6. **Pourquoi traiter les messages malformés à part ?** L'erreur survient à la désérialisation, avant l'appel du listener : un retry n'aide pas, car le même payload échouera toujours (poison pill). Le remède usuel est un `ErrorHandlingDeserializer` avec envoi au DLT ; il n'est pas implémenté ici, et son comportement actuel dans le POC n'a pas été vérifié.

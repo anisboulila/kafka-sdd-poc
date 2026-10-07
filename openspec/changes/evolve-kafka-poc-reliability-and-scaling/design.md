@@ -28,12 +28,22 @@ Set explicitly in `application.properties`: `acks=all`, `enable.idempotence=true
 Rationale: the three stages (record accepted by the producer buffer -> confirmed by the broker -> HTTP response) become independently explainable and testable. Alternative: keep implicit defaults and only document them (less to change, but nothing observable and the unbounded wait stays).
 `acks=0/1` are NOT implemented as modes; they are documented as theory because one broker cannot show their durability difference. A test may assert the configured values only.
 
-### D2. Failure trigger for Payment **[Proposed]**
-A configuration property naming a `customerId` that makes Payment fail (for example `app.payment.fail-customer-id`), checked in `PaymentConsumer`. Rationale: no change to the `OrderCreated` contract or to `POST /orders`. Alternatives: special `amount` value (couples business data to a test concern); header-based trigger (requires producer changes).
+### D2. Failure trigger for Payment **[Decided in task 2.1; implementation in 2.2]**
+**Decision:** a configuration property `app.payment.fail-customer-id`, empty by default (no failure). When the consumed `OrderCreated.customerId` equals it, `PaymentConsumer` throws an exception instead of simulating the payment. The failure is deterministic: it happens on every delivery of a matching event, so retries are exhausted and the DLT path is reachable. Non-matching events are unaffected.
+**Why:** no change to the `OrderCreated` contract or to `POST /orders`, nothing to add to the producer, trivially testable (set the property, post an order with that `customerId`), and clearly a simulation switch, not payment logic. Rejected: special `amount` (couples business data to a test concern), header-based trigger (requires producer changes), random failure (not deterministic).
+**Implementation future (2.2):** add the property and the throw in `PaymentConsumer`, with a unit test. Not implemented yet.
+**Note on the spec scenario "Retry succeeds":** an always-failing trigger cannot show success on a later attempt. That scenario is covered at handler/unit level in 2.3 (a stub that fails a fixed number of times), not through the trigger.
 
-### D3. Retry and DLT: `DefaultErrorHandler` + `DeadLetterPublishingRecoverer` **[Proposed]**
-Blocking retry with a fixed backoff and a small attempt count, applied only to the Payment listener container, then publish to a DLT named by the Spring default convention (`order-events.DLT`) **[to validate]**. Rationale: smallest mechanism that shows retry -> exhaustion -> DLT with a visible record; blocking behavior (the partition is paused during retries) is itself a teaching point. `@RetryableTopic` is rejected: non-blocking retry topics add several topics and concepts, not needed for the stated goals.
-Constraint to verify: by default the recovered record is sent to the same partition number as the source, so the DLT must be declared explicitly with at least as many partitions as `order-events` (or use a destination resolver). Notification keeps its own container/behavior unchanged, which preserves independence.
+### D3. Consumer retry and DLT: `DefaultErrorHandler` + `DeadLetterPublishingRecoverer` **[Decided in task 2.1; implementation in 2.3]**
+Not to be confused with the **producer** retries of task 1.2 (`retries`, `delivery.timeout.ms`): those re-send a record to the broker. The retries here are **consumer-side**: the listener container re-delivers the same record to the Payment listener after a processing failure.
+**Decision (values):**
+- Strategy: blocking retry with `FixedBackOff`: interval 1000 ms, 3 retries after the first failure, so 4 deliveries in total and about 3 s of delay. No exponential growth and no maximum delay: a fixed delay is simplest to explain and keeps tests fast.
+- After exhaustion: `DeadLetterPublishingRecoverer` publishes the failed record to the DLT, then the offset moves on and Payment continues with the next record.
+- Scope: applied to the Payment listener container only. Notification keeps its current behavior (Spring's default handling) and is unaffected.
+- DLT name: `order-events.DLT` (Spring default `<topic>.DLT`). Partitions: 1 and replication factor 1, matching `order-events` today. The recoverer sends to the same partition number as the source record by default, so the DLT must always have at least as many partitions as `order-events` (to be revisited in task 4.2). The topic is declared explicitly (not auto-created) in 2.3.
+- The recoverer keeps the original key and value and adds headers (original topic, partition, offset, exception). DLT records are only observed, never reprocessed, in this POC.
+**Why:** smallest mechanism that shows retry -> exhaustion -> DLT with a visible record. Blocking behavior (the partition waits during retries) is itself a teaching point. `@RetryableTopic` is rejected: it adds retry topics and non-blocking concepts not needed here.
+**Implementation future:** 2.3 (handler, DLT declaration, integration test), 2.4 (Notification independence), 2.5 (docs). Nothing of this is implemented yet; today the default handler still applies (10 deliveries, then skip, no DLT; see Context).
 
 ### D4. In-memory idempotence **[Proposed]**
 A small component holding processed `orderId` values, consulted by `PaymentConsumer`; an id is recorded only after successful processing so retries are not skipped. Limits (lost on restart, not shared across instances, not atomic with a business action, unbounded growth) are documented. Alternative: no component, rely on Kafka only (rejected: nothing to demonstrate). Production approaches (unique constraint, inbox table) stay conceptual.
@@ -53,8 +63,22 @@ After this change: producer to broker is at-least-once with idempotent-producer 
 ### D8. Test isolation
 Introduce unique consumer group ids (and temporary topics where needed) for new tests, and update existing tests to not assume partition 0 or a single assigned partition. Keep `auto-startup=false` where listeners are not needed.
 
-### D9. Malformed message handling **[To validate]**
-Whether to add `ErrorHandlingDeserializer` so an undeserializable record does not block the partition and is sent to the DLT. Default proposal: out of the implemented scope; documented as theory. Needs a decision before D3 tasks are finalized.
+### D9. Malformed message handling **[Decided in task 2.1; documentation only]**
+**Decision:** two failure kinds are kept distinct:
+- **Processing error** (the record deserializes into `OrderCreated`, then the listener fails): handled by D3 (retry, then DLT). This is the only kind implemented in this change.
+- **Malformed message / deserialization failure** (the payload cannot become `OrderCreated`, so the listener is never called): **not implemented**. `ErrorHandlingDeserializer` is not added; the topic is documented as a theory item (poison pill).
+**Why:** the stated goal is observing retry and DLT for a processing failure; handling poison pills adds a wrapper deserializer on the shared consumer configuration, which also affects Notification and its tests. It is a separate concern.
+**Facts not verified (À vérifier):** how the current configuration (plain `JsonDeserializer`, no `ErrorHandlingDeserializer`) reacts to a malformed record in Spring Kafka 3.3.10 was NOT tested. Documentation in 2.5 must state it as theory ("a poison pill fails before the listener; the usual remedy is `ErrorHandlingDeserializer` plus DLT") and must not claim an observed behavior. Both consumer groups share the same deserializer settings, so a malformed record concerns both.
+**Implementation future:** none in this change, except the documentation in 2.5. Revisit only if the user asks.
+
+### Decision summary (task 2.1)
+| Id | Decision | Implemented in |
+|---|---|---|
+| D2 | `app.payment.fail-customer-id` throws in `PaymentConsumer` | 2.2 |
+| D3 | `FixedBackOff(1000 ms, 3 retries)` then `order-events.DLT` (1 partition, RF 1), Payment only | 2.3, 2.4, 2.5 |
+| D9 | Malformed messages out of implementation scope, documented as theory | 2.5 (docs) |
+
+Naming note: in this design the DLT choices are part of D3 and D9 is the malformed-message decision.
 
 ## Risks / Trade-offs
 
@@ -78,10 +102,10 @@ The questions below affect what gets built and MUST be validated by the user bef
 ### Open questions / Decisions to validate
 1. Final partition count of `order-events` (2 proposed) and whether the default stays 1 outside the experiment.
 2. `concurrency` versus multiple instances for the multi-consumer and rebalance demonstrations (D6).
-3. Exact retry/backoff values and number of attempts.
-4. DLT name and partitions (D3), and whether DLT records are only observed, never reprocessed.
-5. Failure trigger design (D2).
+3. ~~Exact retry/backoff values~~ Decided in task 2.1 (D3): `FixedBackOff` 1000 ms, 3 retries (4 deliveries).
+4. ~~DLT name and partitions~~ Decided in task 2.1 (D3): `order-events.DLT`, 1 partition, RF 1, observe only. Must follow the partition count of `order-events` in task 4.2.
+5. ~~Failure trigger design~~ Decided in task 2.1 (D2): `app.payment.fail-customer-id`.
 6. 1-partition vs 2-partition test strategy: temporary topics (proposed) versus altering `order-events` (D5).
-7. Malformed message handling (D9).
+7. ~~Malformed message handling~~ Decided in task 2.1 (D9): out of implementation scope, documented as theory; current behavior not verified.
 8. ~~Exact producer values and HTTP wait bound~~ Decided in task 1.2 (D1): delivery 5 s, request 3 s, max.block 2 s, HTTP wait 6 s; `acks=all` and idempotence stay explicit.
 9. ~~Effective current defaults of the producer and Spring error handling~~ Verified in task 1.1 (see Context). Remaining decision: whether to keep `acks=all` and idempotence explicit even though they already match the defaults (D1: proposed yes, for visibility).

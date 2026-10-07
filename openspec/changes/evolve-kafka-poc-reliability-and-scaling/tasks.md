@@ -6,11 +6,11 @@ Each group lands its own tests and documentation (`README.md` / `interview.md`).
 
 - [x] 1.1 Verify the effective current producer defaults (`acks`, idempotence, retries, `delivery.timeout.ms`, `max.block.ms`) and the current consumer error-handling/ack behavior with a test or logged configuration; record the findings in design.md replacing the "À vérifier" notes.
 - [x] 1.2 Confirm decision D1 (explicit values and HTTP wait bound), then set the producer reliability properties explicitly and bound the `send(...).get(...)` wait; verify `OrderServiceTest` covers confirmation within the bound and timeout mapped to `503`, and the existing tests still pass.
-- [ ] 1.3 Document the accepted / confirmed / HTTP-responded stages and the `acks=0/1/all`, replication, leader/replica, ISR and `min.insync.replicas` theory (marked not demonstrated on one broker) in `README.md` and `interview.md`; verify each requirement scenario of `producer-reliability` has a matching documented answer.
+- [x] 1.3 Document the accepted / confirmed / HTTP-responded stages and the `acks=0/1/all`, replication, leader/replica, ISR and `min.insync.replicas` theory (marked not demonstrated on one broker) in `README.md` and `interview.md`; verify each requirement scenario of `producer-reliability` has a matching documented answer.
 
 ## 2. Payment retry and Dead Letter Topic
 
-- [ ] 2.1 Confirm decisions D2, D3 and D9 (failure trigger, retry/backoff values, DLT name and partitions, malformed-message handling); verify the decisions are written in design.md.
+- [x] 2.1 Confirm decisions D2, D3 and D9 (failure trigger, retry/backoff values, DLT name and partitions, malformed-message handling); verify the decisions are written in design.md.
 - [ ] 2.2 Add the simulated Payment failure trigger; verify a unit test shows a matching event fails and a non-matching event succeeds, with no change to `OrderCreated` or `POST /orders`.
 - [ ] 2.3 Configure bounded retry with backoff and DLT publication for the Payment listener only, and declare the DLT topic; verify an integration test with unique group ids shows retries, then a record on the DLT with the original key and payload.
 - [ ] 2.4 Verify Notification independence: an integration test shows Notification processes the failing event once while Payment is retrying/dead-lettered, and Payment continues with the next event.
