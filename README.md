@@ -163,6 +163,46 @@ The topic currently has one partition, so this POC demonstrates independent cons
 
 Both actions are intentionally local simulations, not calls to payment or notification services. This keeps the learning setup self-contained and makes Kafka's topic, group, and offset behavior observable without databases, credentials, or external dependencies.
 
+## Payment failure, retries and Dead Letter Topic
+
+This scenario simulates a failing payment to show **consumer-side** retry and a Dead Letter Topic (DLT). It is a simulation, not real payment logic.
+
+### Trigger the failure
+
+Start the application with a customer id that must fail (empty by default, so nothing fails):
+
+```bash
+./mvnw spring-boot:run -Dspring-boot.run.arguments=--app.payment.fail-customer-id=fail-me
+```
+
+Then `POST /orders` with `"customerId": "fail-me"`. `OrderCreated` and the endpoint are unchanged.
+
+### What happens
+
+1. `PaymentConsumer` throws on `fail-me` orders. Attempt 1 fails.
+2. Spring Kafka's `DefaultErrorHandler` retries **3 more times with a fixed 1 second backoff** (4 attempts in total, about 3 seconds). The retry is blocking: Payment does not move on during that time.
+3. After the retries are exhausted, `DeadLetterPublishingRecoverer` publishes the record to **`order-events.DLT`** (1 partition, replication factor 1) with the **same key (orderId) and payload**, plus `kafka_dlt-*` headers (original topic, partition, offset, exception message). Payment's offset then moves on and the next order is processed.
+4. `NotificationConsumer` (`notification-group`) has its own offsets and its own container factory. It processes the same order once, immediately, and is not slowed by Payment's retries.
+
+Orders whose payment succeeds never reach the DLT. The DLT is only observed; nothing reprocesses it.
+
+### Observe the DLT
+
+Kafka CLI (inside the Docker container):
+
+```bash
+docker compose exec kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic order-events.DLT --from-beginning --property print.key=true --property print.headers=true
+```
+
+Kafka UI: open http://localhost:8081, topic `order-events.DLT`, tab Messages. In Consumers, compare `payment-group` and `notification-group` offsets and lag on `order-events`.
+
+### Retry vs DLT, and what not to conclude
+
+- **Retry** = try the same record again, hoping the failure is temporary. **DLT** = park the record after retries are exhausted so the partition is not blocked forever.
+- **Consumer retry (Spring Kafka `FixedBackOff`) is not the producer `retries`** configured for publication (see "Producer reliability").
+- This is **at-least-once** processing: a record may be handled several times (here up to 4). It is **not exactly-once** and Payment is not idempotent yet.
+- Malformed messages (cannot be deserialized) are **not handled** in this change; that behavior is theory only and was not verified.
+- Tests: `PaymentRetryAndDltIntegrationTest` (needs the local broker) covers the retries, the DLT record, a successful order not reaching the DLT, and Notification independence.
 ## Complete local walkthrough
 
 The automated end-to-end integration test exercises the HTTP API against the real local Kafka broker and checks the published record, both consumer actions, each group's committed offset, and lag. It expects Kafka to be running at `localhost:9092`; the test does not start or stop Docker infrastructure. Manual local startup and observation are left to the developer.

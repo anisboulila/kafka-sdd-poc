@@ -22,6 +22,7 @@ public class PaymentConsumer {
 
     @KafkaListener(
             id = "paymentConsumerListener",
+            containerFactory = "paymentKafkaListenerContainerFactory",
             topics = "order-events",
             groupId = "payment-group")
     public void consume(OrderCreated event) {
@@ -29,6 +30,8 @@ public class PaymentConsumer {
         // An exception escaping the listener is what makes Spring Kafka's error handler react
         // (retry, then recover); the offset is not committed past a failing record until then.
         if (!failCustomerId.isBlank() && failCustomerId.equals(event.customerId())) {
+            // Logged on every attempt so the retries are visible in the logs (and countable in tests).
+            log.warn("Simulated payment failure for orderId={}", event.orderId());
             throw new IllegalStateException(
                     "Simulated payment failure for orderId=" + event.orderId());
         }

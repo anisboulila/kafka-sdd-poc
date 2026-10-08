@@ -43,7 +43,13 @@ import org.springframework.kafka.test.utils.ContainerTestUtils;
 
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = "spring.kafka.consumer.auto-offset-reset=earliest")
+        properties = {
+            "spring.kafka.consumer.auto-offset-reset=earliest",
+            // Same properties as PaymentRetryAndDltIntegrationTest so both share ONE Spring
+            // context: a second context would start a second member in the fixed consumer groups
+            // and split the single partition between them.
+            "app.payment.fail-customer-id=dlt-test-customer"
+        })
 class OrderFlowEndToEndIntegrationTest {
 
     private static final String TOPIC = "order-events";

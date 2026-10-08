@@ -884,3 +884,32 @@ Si Kafka confirme mais que la réponse `201` est perdue, le message est publié 
 1. **Comment faire échouer un consumer pour tester la gestion d'erreur ?** Avec un déclencheur de simulation explicite et déterministe (propriété), plutôt qu'un échec aléatoire ou un changement du contrat de l'événement.
 2. **Pourquoi une exception du listener est-elle importante ?** C'est elle qui déclenche le error handler de Spring Kafka ; sans exception, le record est considéré comme traité et l'offset avance.
 3. **Pourquoi le déclencheur est-il vide par défaut ?** Pour que le comportement normal du POC reste inchangé ; la panne n'existe que lorsqu'on l'active volontairement.
+
+## Tâches 2.3 / 2.4 / 2.5 : retry consommateur, DLT et indépendance des groupes
+
+**Q : Retry producer vs retry consumer ?**
+R : Le `retries` du producer renvoie un envoi vers Kafka qui a échoué (publication). Le retry consumer (`DefaultErrorHandler` + `FixedBackOff`) rejoue le traitement d'un record déjà lu. Deux mécanismes, deux configurations, aucun lien.
+
+**Q : Quelle configuration de retry avons-nous ?**
+R : `FixedBackOff(1000, 3)` : 1 tentative initiale + 3 retries, 1 s entre chaque, donc 4 tentatives en environ 3 s, uniquement pour Payment.
+
+**Q : Retry vs DLT ?**
+R : Le retry sert aux pannes temporaires. Le DLT reçoit le record quand les retries sont épuisés, pour ne pas bloquer la partition indéfiniment et garder la trace du message en échec.
+
+**Q : Que contient le DLT ?**
+R : Le même key et le même payload que l'original, plus des headers `kafka_dlt-original-topic`, `-original-partition`, `-original-offset`, `-exception-message`. Chez nous : `order-events.DLT`, 1 partition, RF 1, jamais retraité.
+
+**Q : Piège rencontré ?**
+R : Spring Kafka 3.3 nomme le DLT par défaut `<topic>-dlt`. Notre topic déclaré s'appelle `order-events.DLT`, donc la destination est fixée explicitement. Le test a échoué tant que ce n'était pas le cas : le record partait dans un topic auto-créé.
+
+**Q : Le retry est-il bloquant ?**
+R : Oui. Pendant les 3 s, la partition n'avance pas pour Payment. Acceptable pour un POC ; des retry topics non bloquants existent mais sont hors périmètre.
+
+**Q : Pourquoi Notification n'est-elle pas ralentie ?**
+R : Chaque consumer group a ses propres offsets et son propre container. Le test montre que Notification traite l'ordre en échec et le suivant avant la 4e tentative de Payment.
+
+**Q : Est-ce de l'exactly-once ?**
+R : Non. C'est de l'at-least-once : un record peut être traité jusqu'à 4 fois et Payment n'est pas encore idempotent.
+
+**Q : Pourquoi un `groupId` unique dans le test ?**
+R : Pour lire le DLT sans perturber les offsets des groupes applicatifs. Les groupes `payment-group` et `notification-group` restent fixes (ils sont vérifiés par le test E2E), donc les deux classes de tests partagent un seul contexte Spring.

@@ -91,9 +91,9 @@ class KafkaEffectiveDefaultsTest {
         assertEquals(ContainerProperties.AckMode.BATCH, payment.getContainerProperties().getAckMode());
         assertEquals(ContainerProperties.AckMode.BATCH, notification.getContainerProperties().getAckMode());
 
-        // No error handler is set on the container by our application; Spring Kafka
-        // then uses a DefaultErrorHandler created at container start.
-        assertNull(payment.getCommonErrorHandler());
+        // Since task 2.3 Payment has its own DefaultErrorHandler (retry + DLT, see
+        // OrderKafkaConfiguration); Notification still has none set and uses Spring's default.
+        assertTrue(payment.getCommonErrorHandler() instanceof DefaultErrorHandler);
         assertNull(notification.getCommonErrorHandler());
     }
 
